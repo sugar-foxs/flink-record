@@ -1,0 +1,32 @@
+流处理应用解决的三个问题：streams,state,time。
+flink如何解决的：
+1，Streams
+Streams有不同的特性影响应用图和去处理流，flink是可以处理任何种类流的框架。
+Bounded and UnBounded Streams 有界流和无界流
+Real-time and recored Streams 实时处理或者先存储后处理
+2，State
+应用状态在Flink中是一等公民。
+Multiple State Primitives：多种状态原语
+Pluggable State Backends：可插拔的状态存储容器
+Exactly-once state consistency：状态一致性（checkpoint recovery）
+Very Large State：可以存储很大的状态
+Scalable Applications：可重新分配状态给更多或更少的worker
+3，Time
+Event-time Mode:流产生时的时间
+Watermark Support: 
+Late Data Handling: 
+Processing-time Mode: 流到达被处理的机器的时间，使用这个，适合需要低延迟，并可以忍受乱序导致的的应用。
+
+
+失败恢复机制：保证内部状态一致，使失败就像没发生一样。
+如何保证：
+Consistent Checkpoints: Flink的恢复机制基于应用程序状态的一致检查点。 如果发生故障，将重新启动应用程序并从最新检查点加载其状态。 结合可重置流源，此功能可以保证一次性状态一致性。
+Efficient Checkpoints: 如果应用程序有TB级的状态，则检查应用程序的状态可能非常昂贵。 Flink可以执行异步和增量检查点，以便将检查点对应用程序的延迟SLA的影响保持在非常小的水平。
+End-to-End Exactly-Once: Flink具有特定存储系统的事务接收器，可确保数据仅写入一次，即使出现故障也是如此。
+Integration with Cluster Managers: Flink与集群管理器紧密集成，例如Hadoop YARN，Mesos或Kubernetes。 当进程失败时，将自动启动一个新进程来接管其工作。
+High-Availability Setup: Flink具有高可用性模式，可消除所有单点故障。 HA模式基于Apache ZooKeeper，这是一种经过验证的可靠分布式协调服务。
+
+User case
+事件驱动应用
+数据分析应用
+数据传输应用： 连续的将数据从一个数据库传输到另一个数据库

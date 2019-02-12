@@ -2,7 +2,7 @@
 
 ## 1，windows
 
-- windowfen分为keyed window和non-keyed window，区别就是是否通过key分区，一个使用keyBy()和window(),一个使用windowAll()
+- window分为keyed window和non-keyed window，区别就是是否通过key分区，一个使用keyBy()和window(),一个使用windowAll()
 - 不管是否是keyed window，window()和windowAll()方法都需提供window assigner,用来确定数据流应该被分配到哪一个或多个window中。
 
 Flink 自带window如下：

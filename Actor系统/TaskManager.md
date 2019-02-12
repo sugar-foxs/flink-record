@@ -1,6 +1,6 @@
 ## TaskManager
 - TaskManager负责执行Flink job的各个任务，其有以下几个阶段：
-	* 等待被注册： 周期的发送RegisterTaskManager消息给jobManager，知道注册成功，jobManager会回复AcknowledgeRegistration消息，然后taskManager初始化所有组件。
+	* 等待被注册： 周期的发送RegisterTaskManager消息给jobManager，直到注册成功，jobManager会回复AcknowledgeRegistration消息，然后taskManager初始化所有组件。
 	* 接收处理消息：如，SubmitTask, CancelTask, FailTask
 
 ## TaskManager 启动

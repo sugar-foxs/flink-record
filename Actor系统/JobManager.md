@@ -344,21 +344,398 @@ jobmanager创建成功之后，如何处理消息呢？JobManager继承自FlinkA
   case RequestRestAddress 
   ```
 
-### ActorTaskManagerGateway(与Taskmanager直接联系)
+## jobmanager处理SubmitJob消息
 
-	public CompletableFuture<Acknowledge> submitTask(TaskDeploymentDescriptor tdd, Time timeout) {
-			Preconditions.checkNotNull(tdd);
-			Preconditions.checkNotNull(timeout);
-	
-			scala.concurrent.Future<Acknowledge> submitResult = actorGateway.ask(
-	            //这个是Taskmanager接收到的SubmitTask				
-				new TaskMessages.SubmitTask(tdd),
-				new FiniteDuration(timeout.getSize(), timeout.getUnit()))
-				.mapTo(ClassTag$.MODULE$.<Acknowledge>apply(Acknowledge.class));
-	
-			return FutureUtils.toJava(submitResult);
+- jobManager接收到SubmitJob消息后，生成了一个jobInfo对象装载job信息，然后调用submitJob方法。
+
+```
+case SubmitJob(jobGraph, listeningBehaviour) =>
+      val client = sender()
+
+      val jobInfo = new JobInfo(client, listeningBehaviour, System.currentTimeMillis(),
+        jobGraph.getSessionTimeout)
+
+      submitJob(jobGraph, jobInfo)
+```
+
+- 深入submitJob方法，首先判断jobGraph是否为空，如果为空，返回JobResultFailure消息；
+
+```
+if (jobGraph == null) {
+      jobInfo.notifyClients(
+        decorateMessage(JobResultFailure(
+          new SerializedThrowable(
+            new JobSubmissionException(null, "JobGraph must not be null.")))))
+    }
+```
+
+- 接着向类库缓存管理器注册该Job相关的库文件、类路径；必须确保该步骤在第一步执行，因为后续产生任何异常可以确保上传的类库和Jar等成功从类库缓存管理器移除。
+
+```
+libraryCacheManager.registerJob(
+            jobGraph.getJobID, jobGraph.getUserJarBlobKeys, jobGraph.getClasspaths)
+```
+
+- 接下来是获得用户代码的类加载器classLoader以及发生失败时的重启策略restartStrategy；
+
+```
+val userCodeLoader = libraryCacheManager.getClassLoader(jobGraph.getJobID)
+...
+val restartStrategy =
+    Option(jobGraph.getSerializedExecutionConfig()
+        .deserializeValue(userCodeLoader)
+        .getRestartStrategy())
+        .map(RestartStrategyFactory.createRestartStrategy)
+        .filter(p => p != null) match {
+        case Some(strategy) => strategy
+        case None => restartStrategyFactory.createRestartStrategy()
 	}
+```
 
-等下看下task如何调度的
-### executionGraph生成过程
-由ExecutionGraphBuilder.buildGraph()生成，
+- 接着，获取ExecutionGraph对象的实例。首先尝试从缓存中查找，如果缓存中存在则直接返回，否则直接创建然后加入缓存；
+
+```
+val registerNewGraph = currentJobs.get(jobGraph.getJobID) match {
+    case Some((graph, currentJobInfo)) =>
+    	executionGraph = graph
+    	currentJobInfo.setLastActive()
+    	false
+    case None =>
+    	true
+}
+
+val allocationTimeout: Long = flinkConfiguration.getLong(
+	JobManagerOptions.SLOT_REQUEST_TIMEOUT)
+
+val resultPartitionLocationTrackerProxy: ResultPartitionLocationTrackerProxy =
+	new ResultPartitionLocationTrackerProxy(flinkConfiguration)
+
+executionGraph = ExecutionGraphBuilder.buildGraph(
+    executionGraph,
+    jobGraph,
+    flinkConfiguration,
+    futureExecutor,
+    ioExecutor,
+    scheduler,
+    userCodeLoader,
+    checkpointRecoveryFactory,
+    Time.of(timeout.length, timeout.unit),
+    restartStrategy,
+    jobMetrics,
+    numSlots,
+    blobServer,
+    resultPartitionLocationTrackerProxy,
+    Time.milliseconds(allocationTimeout),
+    log.logger)
+...
+//加入缓存
+if (registerNewGraph) {
+   currentJobs.put(jobGraph.getJobID, (executionGraph, jobInfo))
+}
+```
+
+- 接着根据配置生成带有graphManagerPlugin的graphManager（**后面需要用到这个**），和operationLogManager；
+
+```
+val conf = new Configuration(jobGraph.getJobConfiguration)
+conf.addAll(jobGraph.getSchedulingConfiguration)
+val graphManagerPlugin = GraphManagerPluginFactory.createGraphManagerPlugin(
+	jobGraph.getSchedulingConfiguration, userCodeLoader)
+val operationLogManager = new OperationLogManager(
+	OperationLogStoreLoader.loadOperationLogStore(jobGraph.getJobID(), conf))
+val graphManager =
+	new GraphManager(graphManagerPlugin, null, operationLogManager, executionGraph)
+graphManager.open(jobGraph, new SchedulingConfig(conf, userCodeLoader))
+executionGraph.setGraphManager(graphManager)
+operationLogManager.start()
+```
+
+- 注册Job状态变化的事件回调;
+
+```
+executionGraph.registerJobStatusListener(
+          new StatusListenerMessenger(self, leaderSessionID.orNull))
+```
+
+- 注册整个job状态变化事件回调和单个task状态变化回调给client；
+
+```
+jobInfo.clients foreach {
+    // the sender wants to be notified about state changes
+    case (client, ListeningBehaviour.EXECUTION_RESULT_AND_STATE_CHANGES) =>
+    	val listener  = new StatusListenerMessenger(client, leaderSessionID.orNull)
+    	executionGraph.registerExecutionListener(listener)
+    	executionGraph.registerJobStatusListener(listener)
+    case _ => // do nothing
+}
+```
+
+- 如何生成executionGraph在另一个文章中分析，获取executionGraph之后，如何提交job，继续看；
+- 如果是恢复的job，从最新的checkpoint中恢复。
+
+```
+if (isRecovery) {
+    // this is a recovery of a master failure (this master takes over)
+    executionGraph.restoreLatestCheckpointedState(false, false)
+}
+```
+
+- 或者获取savepoint配置，如果配置了savepoint，便从savepoint中恢复
+
+```
+val savepointSettings = jobGraph.getSavepointRestoreSettings
+if (savepointSettings.restoreSavepoint()) {
+    try {
+        val savepointPath = savepointSettings.getRestorePath()
+        val allowNonRestored = savepointSettings.allowNonRestoredState()
+        val resumeFromLatestCheckpoint = savepointSettings.resumeFromLatestCheckpoint()
+
+        executionGraph.getCheckpointCoordinator.restoreSavepoint(
+            savepointPath,
+            allowNonRestored,
+            resumeFromLatestCheckpoint,
+            executionGraph.getAllVertices,
+            executionGraph.getUserClassLoader
+        )
+    } catch {
+    	...
+    }
+}
+```
+
+- 然后通知client jobsubmit成功消息；
+
+```
+jobInfo.notifyClients(
+	decorateMessage(JobSubmitSuccess(jobGraph.getJobID)))
+```
+
+- 如果这个jobManager是leader,执行scheduleForExecution方法进行调度；否则删除job。
+
+```
+if (leaderSessionID.isDefined &&
+    leaderElectionService.hasLeadership(leaderSessionID.get)) {
+    executionGraph.scheduleForExecution()
+} else {
+	self ! decorateMessage(RemoveJob(jobId, removeJobFromStateBackend = false))
+	log.warn(s"Submitted job $jobId, but not leader. The other leader needs to recover " +
+	"this. I am not scheduling the job for execution.")
+}
+```
+
+- 接着看下scheduleForExecution是如何调度的。
+- **状态从created转变成running,然后调用GraphManager开始调度。**
+
+```
+if (transitionState(JobStatus.CREATED, JobStatus.RUNNING)) {
+	graphManager.startScheduling();
+}
+```
+
+- 其实是使用了graphManagerPlugin的onSchedulingStarted方法；
+
+```
+public void startScheduling() {
+		LOG.info("Start scheduling execution graph with graph manager plugin: {}",
+			graphManagerPlugin.getClass().getName());
+		graphManagerPlugin.onSchedulingStarted();
+	}
+```
+
+### GraphManagerPlugin
+
+**flink实现了三种GraphManagerPlugin：EagerSchedulingPlugin，RunningUnitGraphManagerPlugin，StepwiseSchedulingPlugin。**
+
+#### EagerSchedulingPlugin
+
+- 调度开始后，启动所有顶点。这个比较粗暴，生成所有的顶点并调度。
+
+```
+	public void onSchedulingStarted() {
+		final List<ExecutionVertexID> verticesToSchedule = new ArrayList<>();
+		for (JobVertex vertex : jobGraph.getVerticesSortedTopologicallyFromSources()) {
+			for (int i = 0; i < vertex.getParallelism(); i++) {
+				verticesToSchedule.add(new ExecutionVertexID(vertex.getID(), i));
+			}
+		}
+		scheduler.scheduleExecutionVertices(verticesToSchedule);
+	}
+```
+
+#### RunningUnitGraphManagerPlugin
+
+- 根据runningUnit安排作业
+
+```
+public void onSchedulingStarted() {
+		final List<ExecutionVertexID> verticesToSchedule = new ArrayList<>();
+		for (JobVertex vertex : jobGraph.getVerticesSortedTopologicallyFromSources()) {
+			if (vertex.isInputVertex()) {
+				for (int i = 0; i < vertex.getParallelism(); i++) {
+					verticesToSchedule.add(new ExecutionVertexID(vertex.getID(), i));
+				}
+			}
+		}
+		scheduleOneByOne(verticesToSchedule);
+	}
+```
+
+
+
+#### StepwiseSchedulingPlugin
+
+- 首先启动源顶点，并根据其可消耗输入启动下游顶点
+
+```
+public void onSchedulingStarted() {
+		runningUnitMap.values().stream()
+				.filter(LogicalJobVertexRunningUnit::allDependReady)
+				.forEach(this::addToScheduleQueue);
+		checkScheduleNewRunningUnit();
+	}
+```
+
+上面三种不同是调度vertice的顺序，但是vertice调度方法是一样的，都是调用ExecutionGraphVertexScheduler的scheduleExecutionVertices方法；
+
+```
+public class ExecutionGraphVertexScheduler implements VertexScheduler {
+    public void scheduleExecutionVertices(Collection<ExecutionVertexID> 			         verticesToSchedule) {
+        synchronized (executionVerticesToBeScheduled) {
+            if (isReconciling) {
+                executionVerticesToBeScheduled.add(verticesToSchedule);
+                return;
+            }
+        }
+        executionGraph.scheduleVertices(verticesToSchedule);
+	}
+}
+```
+
+- 继续深入scheduleVertices方法，该方法是在调度之前检查vertice健康状态，如果都没问题，则调用schedule(vertices)方法；
+
+```\
+public void scheduleVertices(Collection<ExecutionVertexID> verticesToSchedule) {
+
+		try {
+			long currentGlobalModVersion = globalModVersion;
+
+			if (verticesToSchedule == null || verticesToSchedule.isEmpty()) {
+				return;
+			}
+
+			int alreadyScheduledCount = 0;
+			int unhealthyCount = 0;
+			final List<ExecutionVertex> vertices = new ArrayList<>(verticesToSchedule.size());
+			for (ExecutionVertexID executionVertexID : verticesToSchedule) {
+				ExecutionVertex ev = getJobVertex(executionVertexID.getJobVertexID()).getTaskVertices()[executionVertexID.getSubTaskIndex()];
+				if (ev.getExecutionState() == ExecutionState.CREATED) {
+					vertices.add(ev);
+				} else if (ev.getExecutionState() == ExecutionState.SCHEDULED ||
+						ev.getExecutionState() == ExecutionState.DEPLOYING ||
+						ev.getExecutionState() == ExecutionState.RUNNING ||
+						ev.getExecutionState() == ExecutionState.FINISHED) {
+
+					alreadyScheduledCount++;
+				} else {
+					unhealthyCount++;
+				}
+			}
+			if (unhealthyCount >  0) {
+				throw new IllegalStateException("Not all submitted vertices can be scheduled. " +
+//						alreadyScheduledCount + " vertices are already scheduled and " +
+						unhealthyCount + " vertices are in unhealthy state. " +
+						"Please check the schedule logic in " + graphManager.getClass().getCanonicalName());
+			}
+
+			LOG.info("Schedule {} vertices: {}, already scheduled {}", vertices.size(), vertices, alreadyScheduledCount);
+
+			if (vertices.isEmpty()) {
+				return;
+			}
+
+			final CompletableFuture<Void> schedulingFuture = schedule(vertices);
+
+			if (state == JobStatus.RUNNING && currentGlobalModVersion == globalModVersion) {
+
+				schedulingFutures.put(schedulingFuture, schedulingFuture);
+				schedulingFuture.whenCompleteAsync(
+						(Void ignored, Throwable throwable) -> {
+							schedulingFutures.remove(schedulingFuture);
+						},
+						futureExecutor);
+			} else {
+				schedulingFuture.cancel(false);
+			}
+		} catch (Throwable t) {
+			。。。
+		}
+	}
+```
+
+- 深入schedule(vertices)方法，这是真正调度vertices的方法,看看具体做了什么。
+
+```
+private CompletableFuture<Void> schedule(Collection<ExecutionVertex> vertices) {
+
+		checkState(state == JobStatus.RUNNING, "job is not running currently");
+		final boolean queued = allowQueuedScheduling;
+		List<SlotRequestId> slotRequestIds = new ArrayList<>(vertices.size());
+		List<ScheduledUnit> scheduledUnits = new ArrayList<>(vertices.size());
+		List<SlotProfile> slotProfiles = new ArrayList<>(vertices.size());
+		List<Execution> scheduledExecutions = new ArrayList<>(vertices.size());
+
+		for (ExecutionVertex ev : vertices) {
+			final Execution exec = ev.getCurrentExecutionAttempt();
+			try {
+				Tuple2<ScheduledUnit, SlotProfile> scheduleUnitAndSlotProfile = exec.enterScheduledAndPrepareSchedulingResources();
+				slotRequestIds.add(new SlotRequestId());
+				scheduledUnits.add(scheduleUnitAndSlotProfile.f0);
+				slotProfiles.add(scheduleUnitAndSlotProfile.f1);
+				scheduledExecutions.add(exec);
+			} catch (IllegalExecutionStateException e) {
+				LOG.info("The execution {} may be already scheduled by other thread.", ev.getTaskNameWithSubtaskIndex(), e);
+			}
+		}
+
+		if (slotRequestIds.isEmpty()) {
+			return CompletableFuture.completedFuture(null);
+		}
+        //分配slot
+		List<CompletableFuture<LogicalSlot>> allocationFutures =
+				slotProvider.allocateSlots(slotRequestIds, scheduledUnits, queued, slotProfiles, allocationTimeout);
+		List<CompletableFuture<Void>> assignFutures = new ArrayList<>(slotRequestIds.size());
+		for (int i = 0; i < allocationFutures.size(); i++) {
+			final int index = i;
+			allocationFutures.get(i).whenComplete(
+					(ignore, throwable) -> {
+						if (throwable != null) {
+							slotProvider.cancelSlotRequest(
+									slotRequestIds.get(index),
+									scheduledUnits.get(index).getSlotSharingGroupId(),
+									scheduledUnits.get(index).getCoLocationConstraint(),
+									throwable);
+						}
+					}
+			);
+			assignFutures.add(allocationFutures.get(i).thenAccept(
+					(LogicalSlot logicalSlot) -> {
+						if 
+						//
+						(!scheduledExecutions.get(index).tryAssignResource(logicalSlot)) {
+							// release the slot
+							Exception e = new FlinkException("Could not assign logical slot to execution " + scheduledExecutions.get(index) + '.');
+							logicalSlot.releaseSlot(e);
+							throw new CompletionException(e);
+						}
+					})
+			);
+		}
+		// 所有的slot分配完成才算完成，有一个失败便算失败。
+		final ConjunctFuture<Collection<Void>> allAssignFutures = FutureUtils.combineAll(assignFutures);
+		。。。省略异常处理
+		return currentSchedulingFuture;
+	}
+```
+
+所以上述方法主要任务是为vertice分配slot资源。
+

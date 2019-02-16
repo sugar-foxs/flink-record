@@ -2,7 +2,7 @@
 
 client提交job到JobManager的过程：
 
-- ClusterClient的run方法，传入了JobGraph
+1，ClusterClient的run方法，传入了JobGraph
 
 ```
 public JobExecutionResult run(JobGraph jobGraph, ClassLoader classLoader) throws ProgramInvocationException {
@@ -24,7 +24,9 @@ public JobExecutionResult run(JobGraph jobGraph, ClassLoader classLoader) throws
 	}
 ```
 
-- 追溯到JobClient的submitJobAndWait方法，调用了submitJob方法：
+JobClient负责将一个JobGraph发送给JobManager。如果作业被顺利执行完成则返回JobExecutionResult对象而如果JobManager产生故障，则抛出抛出JobExecutionException异常。
+
+2，追溯到JobClient的submitJobAndWait方法，看看JobClient是如何提交job的，其中调用了submitJob方法：
 
 ```
 public static JobListeningContext submitJob(
@@ -60,7 +62,9 @@ public static JobListeningContext submitJob(
 	}
 ```
 
-- 下面看下如何处理SubmitJobAndWait消息的。
+可以看到，创建了一个JobClientActor作为代理，用于和JobManager交流，包括提交jobGraph。在submitJobAndWait方法中，其首先会创建一个JobClientActor的ActorRef，然后向其发起一个SubmitJobAndWait消息，该消息将JobGraph的实例提交给JobClientActor。发起模式是**ask**，它表示需要一个应答消息。
+
+3，下面看下如何处理SubmitJobAndWait消息的。
 
 ```
 public void handleCustomMessage(Object message) {
@@ -92,7 +96,9 @@ public void handleCustomMessage(Object message) {
 	}
 ```
 
-- 深入到创建JobSubmissionClientActor的tryToSubmitJob方法中，
+该SubmitJobAndWait消息被JobClientActor接收后，最终通过调用tryToSubmitJob方法触发真正的提交动作。
+
+4，深入到创建JobSubmissionClientActor的tryToSubmitJob方法中，
 
 ```
 private void tryToSubmitJob() {
@@ -142,4 +148,14 @@ private void tryToSubmitJob() {
 				});
 	}
 ```
+
+在tryToSubmitJob方法中，JobGraph的提交分为两步：
+
+- 1，将用户程序相关的Jar包上传至JobManager；
+
+- 2，给JobManager Actor发送封装JobGraph的SubmitJob消息；
+
+之后，JobManager Actor会接收到来自JobClientActor的SubmitJob消息，进而触发submitJob方法，具体jobManager如何处理SubmitJob消息的在另一篇中介绍。
+
+5，最后不管job是否被成功提交，都会返回一个成功或者失败结果。
 

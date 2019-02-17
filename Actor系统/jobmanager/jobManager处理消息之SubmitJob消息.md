@@ -181,7 +181,7 @@ jobInfo.notifyClients(
 
 #### 3.1，**获取ExecutionGraph中所有vertice，并为其分配slot资源**
 
-- 如果这个jobManager是leader,执行scheduleForExecution方法进行调度；否则删除job。
+- 先判断jobmanager是否是leader,如果是leader,执行scheduleForExecution方法进行调度；否则删除job。
 
 ```
 if (leaderSessionID.isDefined &&
@@ -195,7 +195,7 @@ if (leaderSessionID.isDefined &&
 ```
 
 - 接着看下scheduleForExecution是如何调度的。
-- **状态从created转变成running,然后调用GraphManager开始调度。**
+- 如果状态成功从created转变成running,则调用GraphManager开始调度。
 
 ```
 if (transitionState(JobStatus.CREATED, JobStatus.RUNNING)) {
@@ -203,7 +203,7 @@ if (transitionState(JobStatus.CREATED, JobStatus.RUNNING)) {
 }
 ```
 
-- 其实是使用了graphManagerPlugin的onSchedulingStarted方法；
+- GraphManager内部其实是使用了graphManagerPlugin的onSchedulingStarted方法；
 
 ```
 public void startScheduling() {
@@ -213,13 +213,9 @@ public void startScheduling() {
 	}
 ```
 
-### GraphManagerPlugin实现
-
 **flink实现了三种GraphManagerPlugin：EagerSchedulingPlugin，RunningUnitGraphManagerPlugin，StepwiseSchedulingPlugin。**
 
-#### EagerSchedulingPlugin
-
-- 调度开始后，启动所有顶点；
+- EagerSchedulingPlugin，调度开始后，启动所有顶点；
 
 ```
 	public void onSchedulingStarted() {
@@ -233,9 +229,7 @@ public void startScheduling() {
 	}
 ```
 
-#### RunningUnitGraphManagerPlugin
-
-- 根据runningUnit安排作业；
+- RunningUnitGraphManagerPlugin，根据runningUnit安排作业；
 
 ```
 public void onSchedulingStarted() {
@@ -246,9 +240,7 @@ public void onSchedulingStarted() {
 }
 ```
 
-#### StepwiseSchedulingPlugin
-
-- 首先启动源顶点，并根据其可消耗输入启动下游顶点；
+- StepwiseSchedulingPlugin，首先启动源顶点，并根据其可消耗输入启动下游顶点；
 
 ```
 public void onSchedulingStarted() {
@@ -264,7 +256,7 @@ public void onSchedulingStarted() {
 }
 ```
 
-上面三种不同是调度vertice的顺序，但是vertice调度方法是一样的，都是调用ExecutionGraphVertexScheduler的scheduleExecutionVertices方法；
+上面三种plugin不同是调度vertice的顺序，但是vertice调度方法是一样的，最终都是调用ExecutionGraphVertexScheduler的scheduleExecutionVertices方法；
 
 ```
 public class ExecutionGraphVertexScheduler implements VertexScheduler {
@@ -308,7 +300,7 @@ public void scheduleVertices(Collection<ExecutionVertexID> verticesToSchedule) {
 
 - 深入schedule(vertices)方法，这是真正调度vertices的方法,看看具体做了什么。
 
-  - 为每个vertice准备调度的资源，ScheduledUnit，SlotProfile
+  - 为每个vertice准备调度的资源：ScheduledUnit，SlotProfile
 
   ```
   checkState(state == JobStatus.RUNNING, "job is not running currently");

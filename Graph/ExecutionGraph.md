@@ -68,8 +68,7 @@ executionGraph.setJsonPlan(JsonPlanGenerator.generatePlan(jobGraph));
 public void attachJobGraph(List<JobVertex> topologicallySorted) throws JobException {
 
 		final ArrayList<ExecutionJobVertex> newExecJobVertices = new ArrayList<>(topologicallySorted.size());
-
-		createExecutionJobVertex(topologicallySorted);
+		inal long createTimestamp = System.currentTimeMillis();
 
 		for (JobVertex jobVertex : topologicallySorted) {
 
@@ -77,18 +76,22 @@ public void attachJobGraph(List<JobVertex> topologicallySorted) throws JobExcept
 				this.isStoppable = false;
 			}
 
-			ExecutionJobVertex ejv = tasks.get(jobVertex.getID());
+			// 在新建ExecutionJobVertex时已经把中间结果集都初始化好。
+			ExecutionJobVertex ejv = new ExecutionJobVertex(
+				this,
+				jobVertex,
+				1,
+				rpcTimeout,
+				globalModVersion,
+				createTimestamp);
             //把节点用edge相连
 			ejv.connectToPredecessors(this.intermediateResults);
-
+			
+			//ExecutionJobVertex建好并与input建立好edge,存入map中
+			ExecutionJobVertex previousTask = this.tasks.putIfAbsent(jobVertex.getID(), ejv);
 			for (IntermediateResult res : ejv.getProducedDataSets()) {
-				IntermediateResult previousDataSet = this.intermediateResults.putIfAbsent(res.getId(), res);
-				if (previousDataSet != null) {
-					throw new JobException(String.format("Encountered two intermediate data set with ID %s : previous=[%s] / new=[%s]",
-						res.getId(), res, previousDataSet));
-				}
+				IntermediateResult previousDataSet = 						this.intermediateResults.putIfAbsent(res.getId(), res);
 			}
-
 			this.verticesInCreationOrder.add(ejv);
 			this.numVerticesTotal += ejv.getParallelism();
 			newExecJobVertices.add(ejv);

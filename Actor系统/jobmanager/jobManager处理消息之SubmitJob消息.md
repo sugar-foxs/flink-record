@@ -1,15 +1,16 @@
-### Jobmanager处理SubmitJob
+## Jobmanager处理SubmitJob
 
-先将submitJob的主要步骤总结在开头写明，然后一步步分析。
+先将submitJob的主要步骤总结写在开头，然后一步步分析。
 
-- 通过JobGraph生成ExecutionGraph;
-- 恢复状态CheckpointedState，或者Savepoint;
-- 调度任务，获取ExecutionGraph中所有vertice，并为其分配slot资源;
-- 通知TaskManager，将每个vertice部署在分配好的资源中。
+- 1，通过JobGraph生成ExecutionGraph;
+- 2，恢复状态CheckpointedState，或者Savepoint;
+- 3，提交Execution给Scheduler进行调度；
+  - 3.1 获取ExecutionGraph中所有vertice，并为其分配slot资源;
+  - 3.2 通知TaskManager，将每个vertice部署在分配好的资源中。
 
 下面一步一步分析：
 
-1，**通过JobGraph生成ExecutionGraph**
+### 1，**通过JobGraph生成ExecutionGraph**
 
 - jobManager接收到SubmitJob消息后，生成了一个jobInfo对象装载job信息，然后调用submitJob方法。
 
@@ -135,7 +136,7 @@ jobInfo.clients foreach {
 
 - 生成executionGraph细节在另一个文章中分析，获取executionGraph之后，如何提交job？继续看；
 
-2，**恢复状态CheckpointedState，或者Savepoint**
+### 2，**恢复状态CheckpointedState，或者Savepoint**
 
 - 如果是恢复的job，从最新的checkpoint中恢复；
 
@@ -176,7 +177,9 @@ jobInfo.notifyClients(
 	decorateMessage(JobSubmitSuccess(jobGraph.getJobID)))
 ```
 
-3，**调度任务，获取ExecutionGraph中所有vertice，并为其分配slot资源**
+### 3，**提交Execution给Scheduler进行调度**
+
+#### 3.1，**获取ExecutionGraph中所有vertice，并为其分配slot资源**
 
 - 如果这个jobManager是leader,执行scheduleForExecution方法进行调度；否则删除job。
 
@@ -391,7 +394,7 @@ public void scheduleVertices(Collection<ExecutionVertexID> verticesToSchedule) {
   }, futureExecutor);
   ```
 
-4，**通知TaskManager，将每个vertice部署在分配好的资源中**
+#### 3.2，**通知TaskManager，将每个vertice部署在分配好的资源中**
 
 下面深入deploy方法，deploy负责将Execution部署到先前分配好的资源上，提交task到taskManagerGateway，然后由taskManagerGateway转发给Taskmanager。TaskManager如何处理SubmitTask消息之后分析。
 

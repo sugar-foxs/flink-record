@@ -1,0 +1,5 @@
+为什么不在onElement方法里注册定时器，因为每来一条就需要去做一次判断并且一定会调用onElement方法，但是在onEventTime方法注册定时器，只有在数据是Watermark的时候才会去做判断，Watermark大于timer时间才会回调onEventTime方法。
+
+Watermark的产生策略可有用户指定，但是不管什么策略，Watermark产生的频率一定比业务数据流小，数据量比业务数据流小。
+
+通过Watermark回调onEventTime方法是比onElement方法高效的。

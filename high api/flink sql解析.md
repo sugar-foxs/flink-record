@@ -39,139 +39,37 @@ def sqlQuery(query: String): Table = {
 - RelSubset，表示带有同一Trait的RelNode集合。
 - Convention，转化特征，继承自RelTrait，用于转化RelNode，常见的有FlinkConvention
 - Literal，常量
-- Planner，SQL计划，用于解析、优化、执行
+- Planner，SQL计划，用于解析、优化、执行，根据一系列规则和成本模型（例如基于成本的优化模型 VolcanoPlanner、启发式优化模型 HepPlanner）来将一个表达式转为语义等价（但效率更优）的另一个表达式。
+- RelOptRule, 规则
+- RelOptPlanner, 规划器
+- Program, 程序
+
+*Catalog 定义元数据和命名空间，包含 Schema（库）、Table（表）、RelDataType（类型信息）
 
 ## 1，生成语法树
 
-生成语法树是使用Calcite的SqlParse，这里着重讲flink，涉及到calcite就先不介绍了，只需知道sql字符串被转化成了sqlNode tree。
+使用Calcite的SqlParser，将用户编写的 SQL 语句转为 SqlNode 构成的抽象语法树（AST）
+- 通过 JavaCC 模版生成 LL(k) 语法分析器，主模版是 Parser.jj；可对其进行扩展
+- 负责处理各个 Token，逐步生成一棵 SqlNode 组成的 AST
 
 ## 2，验证sql语法
 
-validate是使用FlinkCalciteSqlValidator去验证sql语法，FlinkCalciteValidator继承自Calcite中验证语法的默认实现SqlValidatorImpl类。往下追溯到核心逻辑performUnconditionalRewrites方法，这是将表达式重写成标准形式的方法，以便让验证逻辑的其余部分更加简单。
-
-使用深度遍历将tree中每一个sqlNode都转变成标准形式。下面是对每一种类型的sqlNode进行transform的方法。
+validator是使用Catalog元数据去验证sql语法。
 
 ```
-// now transform node itself
-    final SqlKind kind = node.getKind();
-    switch (kind) {
-    case VALUES:
-      // CHECKSTYLE: IGNORE 1
-      if (underFrom || true) {
-        // leave FROM (VALUES(...)) [ AS alias ] clauses alone,
-        // otherwise they grow cancerously if this rewrite is invoked
-        // over and over
-        return node;
-      } else {
-        final SqlNodeList selectList =
-            new SqlNodeList(SqlParserPos.ZERO);
-        selectList.add(SqlIdentifier.star(SqlParserPos.ZERO));
-        return new SqlSelect(node.getParserPosition(), null, selectList, node,
-            null, null, null, null, null, null, null);
-      }
-
-    case ORDER_BY: {
-      SqlOrderBy orderBy = (SqlOrderBy) node;
-      handleOffsetFetch(orderBy.offset, orderBy.fetch);
-      if (orderBy.query instanceof SqlSelect) {
-        SqlSelect select = (SqlSelect) orderBy.query;
-
-        // Don't clobber existing ORDER BY.  It may be needed for
-        // an order-sensitive function like RANK.
-        if (select.getOrderList() == null) {
-          // push ORDER BY into existing select
-          select.setOrderBy(orderBy.orderList);
-          select.setOffset(orderBy.offset);
-          select.setFetch(orderBy.fetch);
-          return select;
-        }
-      }
-      if (orderBy.query instanceof SqlWith
-          && ((SqlWith) orderBy.query).body instanceof SqlSelect) {
-        SqlWith with = (SqlWith) orderBy.query;
-        SqlSelect select = (SqlSelect) with.body;
-
-        // Don't clobber existing ORDER BY.  It may be needed for
-        // an order-sensitive function like RANK.
-        if (select.getOrderList() == null) {
-          // push ORDER BY into existing select
-          select.setOrderBy(orderBy.orderList);
-          select.setOffset(orderBy.offset);
-          select.setFetch(orderBy.fetch);
-          return with;
-        }
-      }
-      final SqlNodeList selectList = new SqlNodeList(SqlParserPos.ZERO);
-      selectList.add(SqlIdentifier.star(SqlParserPos.ZERO));
-      final SqlNodeList orderList;
-      if (getInnerSelect(node) != null && isAggregate(getInnerSelect(node))) {
-        orderList = SqlNode.clone(orderBy.orderList);
-        // We assume that ORDER BY item does not have ASC etc.
-        // We assume that ORDER BY item is present in SELECT list.
-        for (int i = 0; i < orderList.size(); i++) {
-          SqlNode sqlNode = orderList.get(i);
-          SqlNodeList selectList2 = getInnerSelect(node).getSelectList();
-          for (Ord<SqlNode> sel : Ord.zip(selectList2)) {
-            if (stripAs(sel.e).equalsDeep(sqlNode, Litmus.IGNORE)) {
-              orderList.set(i,
-                  SqlLiteral.createExactNumeric(Integer.toString(sel.i + 1),
-                      SqlParserPos.ZERO));
-            }
-          }
-        }
-      } else {
-        orderList = orderBy.orderList;
-      }
-      return new SqlSelect(SqlParserPos.ZERO, null, selectList, orderBy.query,
-          null, null, null, null, orderList, orderBy.offset,
-          orderBy.fetch);
-    }
-
-    case EXPLICIT_TABLE: {
-      // (TABLE t) is equivalent to (SELECT * FROM t)
-      SqlCall call = (SqlCall) node;
-      final SqlNodeList selectList = new SqlNodeList(SqlParserPos.ZERO);
-      selectList.add(SqlIdentifier.star(SqlParserPos.ZERO));
-      return new SqlSelect(SqlParserPos.ZERO, null, selectList, call.operand(0),
-          null, null, null, null, null, null, null);
-    }
-
-    case DELETE: {
-      SqlDelete call = (SqlDelete) node;
-      SqlSelect select = createSourceSelectForDelete(call);
-      call.setSourceSelect(select);
-      break;
-    }
-
-    case UPDATE: {
-      SqlUpdate call = (SqlUpdate) node;
-      SqlSelect select = createSourceSelectForUpdate(call);
-      call.setSourceSelect(select);
-
-      // See if we're supposed to rewrite UPDATE to MERGE
-      // (unless this is the UPDATE clause of a MERGE,
-      // in which case leave it alone).
-      if (!validatingSqlMerge) {
-        SqlNode selfJoinSrcExpr =
-            getSelfJoinExprForUpdate(
-                call.getTargetTable(),
-                UPDATE_SRC_ALIAS);
-        if (selfJoinSrcExpr != null) {
-          node = rewriteUpdateToMerge(call, selfJoinSrcExpr);
-        }
-      }
-      break;
-    }
-
-    case MERGE: {
-      SqlMerge call = (SqlMerge) node;
-      rewriteMerge(call);
-      break;
-    }
-    }
+public SqlNode validate(SqlNode topNode) {
+  SqlValidatorScope scope = new EmptyScope(this);
+  scope = new CatalogScope(scope, ImmutableList.of("CATALOG"));
+  final SqlNode topNode2 = validateScopedExpression(topNode, scope);
+  final RelDataType type = getValidatedNodeType(topNode2);
+  Util.discard(type);
+  return topNode2;
+}
 ```
+validateScopedExpression首先调用performUnconditionalRewrites方法无条件重写将tree中每一个sqlNode都转变成标准形式。
 
-转变之后，调用每个SqlNode的validate方法，都是calcite内部的方法，以SqlSelect为例，最后调用的是validateQuery方法：
+转变之后，调用每个SqlNode的validate方法，比如：SqlSelect,SqlInsert,SqlCall等，
+以SqlSelect为例，其调用的是validateQuery方法：
 
 ```
 public void validateQuery(SqlNode node, SqlValidatorScope scope,
@@ -200,15 +98,13 @@ public void validateQuery(SqlNode node, SqlValidatorScope scope,
   }
 ```
 
-
-
 ## 3，生成Calcite的逻辑计划
 
 ```
 val relational = planner.rel(validated)
 ```
 
-内部使用SqlToRelConverter的convertQuery方法将验证过的sqlNode转变为RelRoot。
+内部使用SqlToRelConverter的convertQuery方法将验证过的sqlNode转变为RelRoot,生成RelNode组成的AST。
 
 ```
 public RelRoot convertQuery(
@@ -253,10 +149,9 @@ public RelRoot convertQuery(
   }
 ```
 
-
-
 ## 4，优化逻辑计划，生成flink逻辑计划
 
+将 RelNode AST 转为逻辑计划，然后优化它，最终转为实际执行方案。
 优化逻辑在writeToSink方法中引用，使用的RBO优化方式，即事先定义一系列的规则，然后根据这些规则来优化执行计划。
 
 ```

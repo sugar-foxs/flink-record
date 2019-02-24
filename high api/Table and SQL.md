@@ -1,6 +1,6 @@
 # Table and SQL
 
-## 1,Dynamic Table & Continuous Queries
+## 1, Dynamic Table & Continuous Queries
 
 steam和dynamic table、continuous queries的关系：
 
@@ -10,7 +10,7 @@ steam和dynamic table、continuous queries的关系：
 
 - 生成的动态表被转换回流。
 
-## 2,Temporal Table Function
+## 2, Temporal Table Function
 
 - 1.7增加了temporal table function,现在只可以在join中使用
 
@@ -21,11 +21,11 @@ steam和dynamic table、continuous queries的关系：
   tEnv.registerFunction("Rates", rates);
   ```
 
-## 3,Idle State Retention Time
+## 3, Idle State Retention Time
 
 设置State 保留时间是为了防止查询state过大。
 
-## 4,Connect to External System
+## 4, Connect to External System
 
 - connector描述了存储表数据的外部系统。  connector可能已经提供了带有字段的固定格式和schema。
 - 有些系统支持不同的数据格式。 例如，存储在Kafka或文件中的表可以使用CSV，JSON或Avro对rows进行编码。 数据库连接器可能需要此处的表模式。 每个connector都记录了存储系统是否需要定义格式。 不同的系统还需要不同类型的格式（例如，面向列的格式与面向行的格式）。

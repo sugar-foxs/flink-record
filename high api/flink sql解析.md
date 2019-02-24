@@ -21,17 +21,15 @@ def sqlQuery(query: String): Table = {
   }
 ```
 
-
-
 - parse(sql)，基于Java CC的Parse.jj文件，将sql语句变成sqlNode Tree。javacc的解析过程之后详细分析，现在只需要知道sql语句被解析成sqlNode构成的树。
 - validate(sqlNode)，结合catalog验证sql语法。
 - rel(sqlNode)，生成Calcite逻辑计划（RelNode tree）。
 - 基于优化规则区优化逻辑树，生成flink的物理执行计划physical Plan。
 - 物理执行计划转成Flink可执行的计划。
 
-先对后面可能会遇到的Calcite中名词进行解释一下，
+先对Calcite中名词进行解释一下：
 
-- SqlNode，sqlTree中的节点，将在SqlToRelConverter中转化为RelNode。
+- SqlNode，sqlTree中的节点。
 - RexNode，row表达式，比如RexLiteral是常量表达式，如”123”;RexCall是函数表达式，如cast(xx as xx)。它们都是RexNode的子类。
 - RelNode，关系表达式，用来处理数据，如Sort, Join, Project, Filter, Scan, Sample。
 - RelTrait，特征，RelNode中有特征集合，比如RelCollation可能是Project中的排序特征。

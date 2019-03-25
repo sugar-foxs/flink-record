@@ -1,0 +1,8 @@
+负责flink实时平台的搭建，支持jar包上传，和sql任务编写调试,上线运行后将任务提交到调度系统，调度然后启动进程执行任务。
+刚来的时候主要做的是对flink任务的监控方面，比如rps，latency，内存的监控，这些metrics我们是存在opentsdb中的。
+自己实现了reporter，将所有metrics存在opentsdb中。
+opentsdb：
+
+对sql进行了优化：
+1，为了减少对mysql的操作，增加了batch操作
+2，窗口内定时刷新功能

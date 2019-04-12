@@ -114,8 +114,13 @@ RecordWriter.sendToTraget()
 ## sendToTarget
 跨节点传输streamRecord,watermark,latencyMarker最终都是调用的sendToTarget方法。只是选择channel方法不一样。
 -> 取出对应channel的序列化器,目前只有SpanningRecordSerializer类型。
+将完整记录序列化到中间数据序列化缓冲区，并使用continueWritingWithNextBufferBuilder（BufferBuilder）逐个将此缓冲区复制到目标缓冲区。
 -> 写入DataOutputSerializer，返回SerializationResult（isFullRecord,isFullBuffer）.isFullRecord表示record写完了，isFullBuffer表示内存段已满。
-
+-> BufferBuilder不为null,continueWritingWithNextBufferBuilder（BufferBuilder），如果BufferBuilder为null,申请新的BufferBuilder，直到数据全部写进buffer.
+-> 如果flushAlways为true,targetPartition.flush(targetChannel)。通知所有消费者进行消费
+	-> PipelinedSubpartition: buffer放在ArrayDeque中，
+	-> SpillableSubpartition: 
+-> ResultSubpartitionView 是消费ResultSubpartition的
 
 
 

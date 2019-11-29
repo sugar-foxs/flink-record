@@ -56,26 +56,7 @@ raw状态是operators保留在自己的数据结构中的状态。当启用检�
 - 广播状态保存在内存中
 - 所有的task保存一份广播状态
 
-### 6，Checkpoint
-
-- checkpoint用来保证任务的错误恢复。任务失败可以从最新的checkpoint恢复。
-- checkpoint机制需要一个可靠的可以回放数据的数据源(kafka,RabbitMQ,HDFS...)和一个存放state的持久存储（HDFS,S3...）。
-
-#### 6.1 checkpointConfig
-
-- 通过调用StreamExecutionEnvironment.enableCheckpointing(internal，mode)启用checkpoint。 internal默认是-1，表示checkpoint不开启，mode默认是EXACTLY_ONCE模式。
-
-- 可设置checkpoint timeout,超过这个时间checkpoint没有成功，checkpoint终止。默认10分钟。
-- 可设置checkpoint失败任务是否也失败，默认是true。
-- 可设置同时进行的checkpoint数量，默认为1。
-
-#### 6.2 有了checkpointConfig，如何调用checkpoint？
-
-- 在生成EcecutionGraph过程中生成CheckpointCoordinator，主要作用是协调operators和state的分布式快照。它通过向相关的tasks发送触发消息和从各tasks收集确认消息（Ack）来完成checkpoint。同时，它还收集和维护各个tasks上报的状态句柄/状态引用（state handles）。
-
-- 
-
-### 7，State Schema Evolution
+### 6，State Schema Evolution
 
 目前，chema演变只支持Avro,
 
